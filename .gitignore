@@ -1,0 +1,22 @@
+# Terraform and Terragrunt
+**/.terraform/*
+**/.terragrunt-cache/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local .terraform directories
+.terraform/
+
+# Terragrunt cache
+.terragrunt-cache/
+
+# OS files
+.DS_Store
+*.swp 
