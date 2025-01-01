@@ -25,42 +25,4 @@ inputs = merge(
   local.records_config.inputs,
   local.documentdb_config.inputs,
   local.secrets_config.inputs
-)
-
-generate "k8s_providers" {
-  path      = "k8s_providers.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<EOF
-provider "helm" {
-  kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--role-arn", "arn:aws:iam::767397741479:role/TerraformRole"]
-      command     = "aws"
-    }
-  }
-}
-
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--role-arn", "arn:aws:iam::767397741479:role/TerraformRole"]
-    command     = "aws"
-  }
-}
-
-provider "kubectl" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--role-arn", "arn:aws:iam::767397741479:role/TerraformRole"]
-    command     = "aws"
-  }
-}
-EOF
-} 
+) 

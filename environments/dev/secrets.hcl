@@ -5,7 +5,7 @@ locals {
 inputs = {
   secrets_manager = {
     enabled     = true
-    name_prefix = "app/${local.environment}/microstore"
+    name_prefix = "app/${local.environment}/microstore-v6"
     description = "DocumentDB credentials for ${local.environment} environment"
     
     # Policy configuration
@@ -20,7 +20,7 @@ inputs = {
     enable_rotation = false
     
     # Recovery window
-    recovery_window_in_days = 7
+    recovery_window_in_days = 0
     
     # Tags
     tags = {

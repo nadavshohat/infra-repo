@@ -48,8 +48,17 @@ module "vpc" {
   single_nat_gateway     = var.single_nat_gateway
   one_nat_gateway_per_az = var.one_nat_gateway_per_az
 
-  public_subnet_tags  = var.public_subnet_tags
-  private_subnet_tags = var.private_subnet_tags
+  public_subnet_tags = var.public_subnet_tags
+  private_subnet_tags = merge(
+    var.private_subnet_tags,
+    {
+      "karpenter.sh/discovery" = var.cluster_name
+    }
+  )
+
+  vpc_tags = {
+    "karpenter.sh/discovery" = var.cluster_name
+  }
 
   tags = var.tags
 }
@@ -62,7 +71,6 @@ module "eks" {
   cluster_name    = var.cluster_name
   cluster_version = var.cluster_version
 
-  # Enable both private and public access
   cluster_endpoint_private_access = var.cluster_endpoint_private_access
   cluster_endpoint_public_access = var.cluster_endpoint_public_access
   cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
@@ -81,14 +89,104 @@ module "eks" {
 
   eks_managed_node_groups = var.eks_managed_node_groups
 
+  # Fargate profile for Karpenter
+  fargate_profiles = {
+    karpenter = {
+      selectors = [
+        { namespace = "karpenter" }
+      ]
+    }
+  }
+
+  cluster_addons = {
+    kube-proxy            = {}
+    vpc-cni               = {}
+  }
+
   enable_cluster_creator_admin_permissions = var.enable_cluster_creator_admin_permissions
 
   tags = merge(
     var.tags,
     {
-      "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+      "kubernetes.io/cluster/${var.cluster_name}" = "owned",
+      "karpenter.sh/discovery" = var.cluster_name
     }
   )
+}
+
+# Karpenter Module
+module "karpenter" {
+  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
+  version = "~> 20.24"
+
+  cluster_name           = module.eks.cluster_name
+  enable_v1_permissions  = true
+  namespace             = "karpenter"
+
+  # Name needs to match role name passed to the EC2NodeClass
+  node_iam_role_use_name_prefix = false
+  node_iam_role_name           = "KarpenterNodeRole-${var.cluster_name}"
+
+  # Create instance profile
+  create_instance_profile = true
+
+  enable_irsa                    = true
+  irsa_oidc_provider_arn         = module.eks.oidc_provider_arn
+
+  # Add required policies for the node IAM role
+  node_iam_role_additional_policies = {
+    AmazonEKSWorkerNodePolicy      = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+    AmazonEKS_CNI_Policy          = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+    AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+    AmazonSSMManagedInstanceCore  = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
+  tags = var.tags
+}
+
+# Get ECR token for Karpenter repository
+data "aws_ecrpublic_authorization_token" "token" {
+  provider = aws.virginia
+}
+
+# Karpenter Helm Release
+resource "helm_release" "karpenter" {
+  namespace        = "karpenter"
+  create_namespace = true
+
+  name                = "karpenter"
+  repository          = "oci://public.ecr.aws/karpenter"
+  repository_username = data.aws_ecrpublic_authorization_token.token.user_name
+  repository_password = data.aws_ecrpublic_authorization_token.token.password
+  chart               = "karpenter"
+  version             = "1.0.2"
+  wait                = false
+
+  values = [
+    <<-EOT
+    dnsPolicy: Default
+    settings:
+      clusterName: ${module.eks.cluster_name}
+      clusterEndpoint: ${module.eks.cluster_endpoint}
+      interruptionQueue: ${module.karpenter.queue_name}
+    serviceAccount:
+      annotations:
+        eks.amazonaws.com/role-arn: ${module.karpenter.iam_role_arn}
+    webhook:
+      enabled: false
+    EOT
+  ]
+
+  lifecycle {
+    ignore_changes = [
+      repository_password
+    ]
+  }
+
+  depends_on = [
+    module.eks,
+    module.karpenter
+  ]
 }
 
 # Wait for EKS cluster to be ready
@@ -151,7 +249,7 @@ module "eks_addons" {
     }
   }
 
-  # Enable NGINX Ingress Controller
+  # Enable NGINX Ingress Controller first
   enable_ingress_nginx = var.enable_ingress_nginx
   ingress_nginx = {
     namespace = var.ingress_nginx_namespace
@@ -204,7 +302,7 @@ module "eks_addons" {
   external_secrets_secrets_manager_arns = ["arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:*"]
   external_secrets_ssm_parameter_arns   = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/*"]
 
-  # Enable ArgoCD
+  # Enable ArgoCD last
   enable_argocd = var.enable_argocd
   argocd = {
     namespace = var.argocd_namespace
@@ -216,7 +314,23 @@ module "eks_addons" {
       },
       {
         name  = "server.ingress.enabled"
-        value = "false"
+        value = "true"
+      },
+      {
+        name  = "server.ingress.ingressClassName"
+        value = "nginx"
+      },
+      {
+        name  = "server.ingress.hosts[0]"
+        value = "argocd.${var.domain_name}"
+      },
+      {
+        name  = "server.ingress.paths[0]"
+        value = "/"
+      },
+      {
+        name  = "server.ingress.pathType"
+        value = "Prefix"
       },
       {
         name  = "server.extraArgs[0]"
@@ -230,9 +344,15 @@ module "eks_addons" {
   }
 }
 
+# Wait for NGINX to be ready
+resource "time_sleep" "wait_for_nginx" {
+  depends_on = [module.eks_addons]
+  create_duration = "60s"
+}
+
 # Wait for all addons to be ready
 resource "time_sleep" "wait_for_addons" {
-  depends_on = [module.eks_addons]
+  depends_on = [time_sleep.wait_for_nginx]
   create_duration = "30s"
 }
 
@@ -329,16 +449,6 @@ module "acm" {
 # Get Route53 zone data
 data "aws_route53_zone" "selected" {
   name = var.zone_name
-}
-
-# Get ArgoCD Password
-data "kubernetes_secret" "argocd_password" {
-  depends_on = [module.eks_addons, time_sleep.wait_for_addons]
-  
-  metadata {
-    name = "argocd-initial-admin-secret"
-    namespace = var.argocd_namespace
-  }
 }
 
 # Create DocumentDB Cluster
@@ -444,5 +554,13 @@ module "documentdb_secrets" {
   )
 }
 
-
+# Get ArgoCD Password
+data "kubernetes_secret" "argocd_password" {
+  depends_on = [time_sleep.wait_for_addons]
+  
+  metadata {
+    name = "argocd-initial-admin-secret"
+    namespace = var.argocd_namespace
+  }
+}
 

@@ -1,3 +1,3 @@
 inputs = {
-  # No environment-specific overrides needed for dev
+  domain_name = "nshohat.online"
 } 
