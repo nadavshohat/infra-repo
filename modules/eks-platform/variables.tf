@@ -353,3 +353,53 @@ variable "secrets_manager" {
   })
   default = null
 }
+
+variable "grafana_admin_password" {
+  description = "Admin password for Grafana"
+  type        = string
+  sensitive   = true
+  default     = "admin" 
+}
+
+# ELK Stack Variables
+variable "enable_elk_stack" {
+  description = "Enable ELK Stack"
+  type        = bool
+  default     = true
+}
+
+variable "elk_namespace" {
+  description = "Namespace for ELK Stack"
+  type        = string
+  default     = "monitoring"
+}
+
+variable "elasticsearch_version" {
+  description = "Version of Elasticsearch Helm chart"
+  type        = string
+  default     = "8.5.1"
+}
+
+variable "filebeat_version" {
+  description = "Version of Filebeat Helm chart"
+  type        = string
+  default     = "8.5.1"
+}
+
+variable "logstash_version" {
+  description = "Version of Logstash Helm chart"
+  type        = string
+  default     = "8.5.1"
+}
+
+variable "kibana_version" {
+  description = "Version of Kibana Helm chart"
+  type        = string
+  default     = "8.5.1"
+}
+
+variable "kibana_ingress_host" {
+  description = "Hostname for Kibana ingress"
+  type        = string
+  default     = "kibana"
+}

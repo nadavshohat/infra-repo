@@ -19,8 +19,8 @@ inputs = {
     # Rotation configuration
     enable_rotation = false
     
-    # Recovery window
-    recovery_window_in_days = 0
+    # Recovery window - set to 30 days to prevent immediate deletion
+    recovery_window_in_days = 30
     
     # Tags
     tags = {

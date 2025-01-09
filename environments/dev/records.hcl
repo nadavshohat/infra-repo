@@ -14,8 +14,20 @@ inputs = {
       ttl     = 300
       records = []
     }
+    prometheus = {
+      name    = "prometheus"
+      type    = "CNAME"
+      ttl     = 300
+      records = []
+    }
     dev = {
       name    = "dev"
+      type    = "CNAME"
+      ttl     = 300
+      records = []
+    }
+    kibana = {
+      name    = "kibana"
       type    = "CNAME"
       ttl     = 300
       records = []

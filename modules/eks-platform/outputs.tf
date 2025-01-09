@@ -112,11 +112,11 @@ output "route53_record_name" {
   value       = module.records.route53_record_name
 }
 
-output "argocd_admin_password" {
-  description = "ArgoCD initial admin password"
-  value       = data.kubernetes_secret.argocd_password.data.password
-  sensitive   = true
-}
+# output "argocd_admin_password" {
+#   description = "ArgoCD initial admin password"
+#   value       = data.kubernetes_secret.argocd_password.data.password
+#   sensitive   = true
+# }
 
 output "alb_hostname" {
   description = "ALB hostname for the NGINX ingress controller"

@@ -114,6 +114,137 @@ module "eks" {
   )
 }
 
+
+resource "helm_release" "kube_prometheus_stack" {
+  depends_on = [module.eks]
+  
+  name             = "kube-prometheus-stack"
+  repository       = "https://prometheus-community.github.io/helm-charts"
+  chart            = "kube-prometheus-stack"
+  namespace        = "monitoring"
+  create_namespace = true
+  version         = "67.8.0"
+
+  set {
+    name  = "grafana.enabled"
+    value = "true"
+  }
+
+  set {
+    name  = "grafana.adminPassword"
+    value = var.grafana_admin_password
+  }
+
+  # Grafana Ingress Configuration
+  set {
+    name  = "grafana.ingress.enabled"
+    value = "true"
+  }
+
+  set {
+    name  = "grafana.ingress.ingressClassName"
+    value = "nginx"
+  }
+
+  set {
+    name  = "grafana.ingress.hosts[0]"
+    value = "grafana.${var.domain_name}"
+  }
+
+  set {
+    name  = "grafana.ingress.path"
+    value = "/"
+  }
+
+  set {
+    name  = "grafana.ingress.pathType"
+    value = "Prefix"
+  }
+
+  # Prometheus Ingress Configuration
+  set {
+    name  = "prometheus.ingress.enabled"
+    value = "true"
+  }
+
+  set {
+    name  = "prometheus.ingress.ingressClassName"
+    value = "nginx"
+  }
+
+  set {
+    name  = "prometheus.ingress.hosts[0]"
+    value = "prometheus.${var.domain_name}"
+  }
+
+  set {
+    name  = "prometheus.ingress.path"
+    value = "/"
+  }
+
+  set {
+    name  = "prometheus.ingress.pathType"
+    value = "Prefix"
+  }
+
+  # Existing Prometheus Configuration
+  set {
+    name  = "prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues"
+    value = "false"
+  }
+
+  set {
+    name  = "prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues"
+    value = "false"
+  }
+
+  set {
+    name  = "prometheus.prometheusSpec.retention"
+    value = "30d"
+  }
+
+  set {
+    name  = "prometheus.prometheusSpec.resources.requests.cpu"
+    value = "200m"
+  }
+
+  set {
+    name  = "prometheus.prometheusSpec.resources.requests.memory"
+    value = "1Gi"
+  }
+
+  set {
+    name  = "prometheus.prometheusSpec.resources.limits.cpu"
+    value = "500m"
+  }
+
+  set {
+    name  = "prometheus.prometheusSpec.resources.limits.memory"
+    value = "2Gi"
+  }
+
+  # Existing Grafana Configuration
+  set {
+    name  = "grafana.resources.requests.cpu"
+    value = "100m"
+  }
+
+  set {
+    name  = "grafana.resources.requests.memory"
+    value = "256Mi"
+  }
+
+  set {
+    name  = "grafana.resources.limits.cpu"
+    value = "200m"
+  }
+
+  set {
+    name  = "grafana.resources.limits.memory"
+    value = "512Mi"
+  }
+}
+
 # Karpenter Module
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
@@ -159,7 +290,7 @@ resource "helm_release" "karpenter" {
   repository_username = data.aws_ecrpublic_authorization_token.token.user_name
   repository_password = data.aws_ecrpublic_authorization_token.token.password
   chart               = "karpenter"
-  version             = "1.0.2"
+  version             = "1.1.1"
   wait                = false
 
   values = [
@@ -264,6 +395,25 @@ module "eks_addons" {
           enabled = true
           default = true
           controllerValue = "k8s.io/ingress-nginx"
+        }
+        metrics = {
+          enabled = true
+          port = 10254
+          service = {
+            annotations = {
+              "prometheus.io/scrape" = "true"
+              "prometheus.io/port" = "10254"
+            }
+          }
+          serviceMonitor = {
+            enabled = true
+            additionalLabels = {
+              "app.kubernetes.io/name" = "ingress-nginx"
+              "app.kubernetes.io/instance" = "ingress-nginx"
+              "release" = "kube-prometheus-stack"
+            }
+            scrapeInterval = "30s"
+          }
         }
       }
     })]
@@ -555,12 +705,236 @@ module "documentdb_secrets" {
 }
 
 # Get ArgoCD Password
-data "kubernetes_secret" "argocd_password" {
-  depends_on = [time_sleep.wait_for_addons]
-  
-  metadata {
-    name = "argocd-initial-admin-secret"
-    namespace = var.argocd_namespace
+# data "kubernetes_secret" "argocd_password" {
+#   metadata {
+#     name      = "argocd-initial-admin-secret"
+#     namespace = "argocd"
+#   }
+#   depends_on = [
+#     module.eks_addons
+#   ]
+# }
+
+# Elasticsearch
+resource "helm_release" "elasticsearch" {
+  count      = var.enable_elk_stack ? 1 : 0
+  depends_on = [module.eks_addons]
+
+  name       = "elasticsearch"
+  repository = "elastic"
+  chart      = "elasticsearch"
+  namespace  = var.elk_namespace
+  version    = var.elasticsearch_version
+  timeout    = 900
+
+  set {
+    name  = "replicas"
+    value = "1"
+  }
+
+  set {
+    name  = "minimumMasterNodes"
+    value = "1"
+  }
+
+  set {
+    name  = "persistence.enabled"
+    value = "true"
+  }
+
+  set {
+    name  = "volumeClaimTemplate.storageClassName"
+    value = "gp2"
+  }
+
+  set {
+    name  = "volumeClaimTemplate.resources.requests.storage"
+    value = "5Gi"  # Smaller storage for dev
+  }
+
+  set {
+    name  = "resources.requests.cpu"
+    value = "100m"  # Minimal CPU request
+  }
+
+  set {
+    name  = "resources.requests.memory"
+    value = "512Mi"  # Minimal memory request
+  }
+
+  set {
+    name  = "resources.limits.cpu"
+    value = "1000m"  # CPU limit
+  }
+
+  set {
+    name  = "resources.limits.memory"
+    value = "1Gi"  # Memory limit
+  }
+}
+
+# Filebeat
+resource "helm_release" "filebeat" {
+  count      = var.enable_elk_stack ? 1 : 0
+  depends_on = [helm_release.elasticsearch]
+
+  name       = "filebeat"
+  repository = "elastic"
+  chart      = "filebeat"
+  namespace  = var.elk_namespace
+  version    = var.filebeat_version
+
+  values = [
+    yamlencode({
+      filebeatConfig = {
+        "filebeat.yml" = <<-EOT
+          filebeat.inputs:
+          - type: container
+            paths:
+              - /var/log/containers/*.log
+            processors:
+            - add_kubernetes_metadata:
+                host: "$${NODE_NAME}"
+                matchers:
+                - logs_path:
+                    logs_path: "/var/log/containers/"
+
+          output.logstash:
+            hosts: ["logstash-logstash:5044"]
+        EOT
+      }
+    })
+  ]
+}
+
+# Logstash
+resource "helm_release" "logstash" {
+  count      = var.enable_elk_stack ? 1 : 0
+  depends_on = [helm_release.elasticsearch]
+
+  name       = "logstash"
+  repository = "elastic"
+  chart      = "logstash"
+  namespace  = var.elk_namespace
+  version    = var.logstash_version
+
+  values = [
+    yamlencode({
+      extraEnvs = [
+        {
+          name = "ELASTICSEARCH_USERNAME"
+          valueFrom = {
+            secretKeyRef = {
+              name = "elasticsearch-master-credentials"
+              key = "username"
+            }
+          }
+        },
+        {
+          name = "ELASTICSEARCH_PASSWORD"
+          valueFrom = {
+            secretKeyRef = {
+              name = "elasticsearch-master-credentials"
+              key = "password"
+            }
+          }
+        }
+      ]
+
+      logstashPipeline = {
+        "logstash.conf" = <<-EOT
+          input {
+            beats {
+              port => 5044
+            }
+          }
+
+          output {
+            elasticsearch {
+              hosts => "https://elasticsearch-master:9200"
+              cacert => "/usr/share/logstash/config/elasticsearch-master-certs/ca.crt"
+              user => "$${ELASTICSEARCH_USERNAME}"
+              password => "$${ELASTICSEARCH_PASSWORD}"
+            }
+          }
+        EOT
+      }
+
+      secretMounts = [
+        {
+          name = "elasticsearch-master-certs"
+          secretName = "elasticsearch-master-certs"
+          path = "/usr/share/logstash/config/elasticsearch-master-certs"
+        }
+      ]
+
+      service = {
+        annotations = {}
+        type = "ClusterIP"
+        loadBalancerIP = ""
+        ports = [
+          {
+            name = "beats"
+            port = 5044
+            protocol = "TCP"
+            targetPort = 5044
+          },
+          {
+            name = "http"
+            port = 8080
+            protocol = "TCP"
+            targetPort = 8080
+          }
+        ]
+      }
+    })
+  ]
+}
+
+# Kibana
+resource "helm_release" "kibana" {
+  count      = var.enable_elk_stack ? 1 : 0
+  depends_on = [helm_release.elasticsearch]
+
+  name       = "kibana"
+  repository = "elastic"
+  chart      = "kibana"
+  namespace  = var.elk_namespace
+  version    = var.kibana_version
+
+  values = [
+    yamlencode({
+      ingress = {
+        enabled = true
+        ingressClassName = "nginx"
+        hosts = ["${var.kibana_ingress_host}.${var.domain_name}"]
+        path = "/"
+        pathType = "Prefix"
+      }
+    })
+  ]
+}
+
+module "loki_stack" {
+  depends_on = [module.eks_addons]
+  source = "terraform-iaac/loki-stack/kubernetes"
+
+  namespace        = "monitoring"
+  create_namespace = false
+
+  provider_type          = "local"
+  pvc_storage_class_name = "gp2"
+  pvc_access_modes       = ["ReadWriteOnce"]
+  persistent_volume_size = "10Gi"
+
+  loki_resources = {
+    request_cpu    = "100m"
+    request_memory = "256Mi"
+  }
+
+  promtail_resources = {
+    request_cpu    = "50m"
+    request_memory = "128Mi"
   }
 }
 
