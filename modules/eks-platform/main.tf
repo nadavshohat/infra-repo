@@ -158,6 +158,10 @@ resource "helm_release" "kube_prometheus_stack" {
           affinity = var.critical_node_config.affinity
         }
       }
+      kubeStateMetrics = {
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
+      }
       grafana = {
         enabled = true
         adminPassword = var.grafana_admin_password
@@ -289,10 +293,13 @@ module "aws_load_balancer_controller" {
 
   enable_aws_load_balancer_controller = true
   aws_load_balancer_controller = {
-    configuration_values = jsonencode({
-      tolerations = var.critical_node_config.tolerations
-      affinity = var.critical_node_config.affinity
-    })
+    values = [
+      yamlencode({
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
+        replicaCount = 2
+      })
+    ]
     set = [
       {
         name  = "vpcId"
@@ -335,6 +342,14 @@ module "eks_addons" {
           tolerations = var.critical_node_config.tolerations
           affinity = var.critical_node_config.affinity
         }
+      })
+    }
+    coredns = {
+      most_recent = true
+      preserve = true
+      configuration_values = jsonencode({
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
       })
     }
   }
@@ -393,10 +408,20 @@ module "eks_addons" {
   cert_manager = {
     namespace = var.cert_manager_namespace
     create_namespace = true
-    configuration_values = jsonencode({
-      tolerations = var.critical_node_config.tolerations
-      affinity = var.critical_node_config.affinity
-    })
+    values = [
+      yamlencode({
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
+        webhook = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+        cainjector = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+      })
+    ]
     set = [
       {
         name  = "serviceAccount.name"
@@ -413,6 +438,20 @@ module "eks_addons" {
   enable_external_secrets = var.enable_external_secrets
   external_secrets = {
     namespace = var.external_secrets_namespace
+    values = [
+      yamlencode({
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
+        webhook = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+        certController = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+      })
+    ]
     set = [
       {
         name  = "serviceAccount.name"
@@ -421,32 +460,53 @@ module "eks_addons" {
     ]
   }
 
-  # ArgoCD (Non-Critical)
+  # ArgoCD (Critical)
   enable_argocd = var.enable_argocd
   argocd = {
     namespace = var.argocd_namespace
     chart_version = var.argocd_helm_version
-    set = [
-      {
-        name  = "server.service.type"
-        value = var.argocd_service_type
-      },
-      {
-        name  = "server.ingress.enabled"
-        value = "true"
-      },
-      {
-        name  = "server.ingress.ingressClassName"
-        value = "nginx"
-      },
-      {
-        name  = "server.ingress.hosts[0]"
-        value = "argocd.${var.domain_name}"
-      },
-      {
-        name  = "server.extraArgs[0]"
-        value = "--insecure"
-      }
+    values = [
+      yamlencode({
+        controller = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+        server = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+          service = {
+            type = var.argocd_service_type
+          }
+          ingress = {
+            enabled = true
+            ingressClassName = "nginx"
+            hosts = ["argocd.${var.domain_name}"]
+          }
+          extraArgs = [
+            "--insecure"
+          ]
+        }
+        repoServer = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+        applicationSet = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+        redis = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+        dex = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+        notifications = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+      })
     ]
   }
 }
@@ -735,6 +795,10 @@ resource "helm_release" "filebeat" {
 
   values = [
     yamlencode({
+      daemonset = {
+        enabled = true
+      }
+      # Remove tolerations and affinity since we want it on all nodes
       filebeatConfig = {
         "filebeat.yml" = <<-EOT
           filebeat.inputs:
@@ -884,5 +948,31 @@ resource "aws_security_group_rule" "node_ingress_alb_https" {
   security_group_id        = module.eks.node_security_group_id
   cidr_blocks              = ["0.0.0.0/0"]
   description             = "Allow ALB to access pod HTTPS"
+}
+
+# Loki Stack
+module "loki_stack" {
+  depends_on = [module.eks_addons]
+  source = "terraform-iaac/loki-stack/kubernetes"
+  
+  namespace        = "monitoring"
+  create_namespace = false
+  
+  provider_type          = "local"
+  pvc_storage_class_name = "gp2"
+  pvc_access_modes       = ["ReadWriteOnce"]
+  persistent_volume_size = "10Gi"
+  
+  loki_resources = {
+    request_cpu    = "100m"
+    request_memory = "256Mi"
+  }
+  
+  promtail_resources = {
+    request_cpu    = "50m"
+    request_memory = "128Mi"
+  }
+
+  loki_docker_image = "grafana/loki:2.9.3"
 }
 
