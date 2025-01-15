@@ -1,0 +1,23 @@
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiFamily: AL2023
+  role: "KarpenterNodeRole-dev-eks-cluster"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "dev-eks-cluster"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "dev-eks-cluster"
+        kubernetes.io/cluster/dev-eks-cluster: owned
+  amiSelectorTerms:
+    - alias: al2023@latest
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  tags:
+    karpenter.sh/discovery: "dev-eks-cluster" 

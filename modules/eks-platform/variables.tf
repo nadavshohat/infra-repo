@@ -215,25 +215,19 @@ variable "argocd_service_type" {
 }
 
 variable "ingress_alb" {
-  description = "Shared ALB ingress configuration for NGINX controller"
+  description = "Configuration for the ALB ingress"
   type = object({
     enabled = optional(bool, true)
     name = optional(string, "nginx-alb")
     namespace = optional(string, "ingress-nginx")
+    path = optional(string, "/*")
     service = optional(object({
       name = optional(string, "ingress-nginx-controller")
       port = optional(number, 80)
-    }), {})
-    path = optional(string, "/*")
+    }))
     annotations = optional(map(string), {
-      "kubernetes.io/ingress.class"                = "alb"
-      "alb.ingress.kubernetes.io/scheme"           = "internet-facing"
-      "alb.ingress.kubernetes.io/target-type"      = "ip"
-      "alb.ingress.kubernetes.io/healthcheck-path" = "/healthz"
-      "alb.ingress.kubernetes.io/group.name"       = "shared"
-      "alb.ingress.kubernetes.io/listen-ports"     = "[{\"HTTP\": 80}, {\"HTTPS\": 443}]"
-      "alb.ingress.kubernetes.io/ssl-redirect"     = "443"
-      "alb.ingress.kubernetes.io/ssl-policy"       = "ELBSecurityPolicy-TLS-1-2-2017-01"
+      "alb.ingress.kubernetes.io/scheme"     = "internet-facing"
+      "alb.ingress.kubernetes.io/target-type" = "ip"
     })
   })
   default = {}
@@ -402,4 +396,43 @@ variable "kibana_ingress_host" {
   description = "Hostname for Kibana ingress"
   type        = string
   default     = "kibana"
+}
+
+variable "karpenter_node_pool_configuration" {
+  description = "Configuration for Karpenter NodePool manifests"
+  type = object({
+    enabled = bool
+    manifests = list(object({
+      content = string
+    }))
+  })
+  default = {
+    enabled = false
+    manifests = []
+  }
+}
+
+variable "critical_node_config" {
+  description = "Configuration for critical node tolerations and affinity"
+  type = object({
+    tolerations = list(object({
+      key      = string
+      operator = string
+      value    = string
+      effect   = string
+    }))
+    affinity = object({
+      nodeAffinity = object({
+        requiredDuringSchedulingIgnoredDuringExecution = object({
+          nodeSelectorTerms = list(object({
+            matchExpressions = list(object({
+              key      = string
+              operator = string
+              values   = list(string)
+            }))
+          }))
+        })
+      })
+    })
+  })
 }

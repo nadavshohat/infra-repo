@@ -78,6 +78,7 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = slice(module.vpc.private_subnets, 0, 3)
 
+
   # Node group defaults
   eks_managed_node_group_defaults = {
     create_iam_role = true
@@ -125,124 +126,67 @@ resource "helm_release" "kube_prometheus_stack" {
   create_namespace = true
   version         = "67.8.0"
 
-  set {
-    name  = "grafana.enabled"
-    value = "true"
-  }
-
-  set {
-    name  = "grafana.adminPassword"
-    value = var.grafana_admin_password
-  }
-
-  # Grafana Ingress Configuration
-  set {
-    name  = "grafana.ingress.enabled"
-    value = "true"
-  }
-
-  set {
-    name  = "grafana.ingress.ingressClassName"
-    value = "nginx"
-  }
-
-  set {
-    name  = "grafana.ingress.hosts[0]"
-    value = "grafana.${var.domain_name}"
-  }
-
-  set {
-    name  = "grafana.ingress.path"
-    value = "/"
-  }
-
-  set {
-    name  = "grafana.ingress.pathType"
-    value = "Prefix"
-  }
-
-  # Prometheus Ingress Configuration
-  set {
-    name  = "prometheus.ingress.enabled"
-    value = "true"
-  }
-
-  set {
-    name  = "prometheus.ingress.ingressClassName"
-    value = "nginx"
-  }
-
-  set {
-    name  = "prometheus.ingress.hosts[0]"
-    value = "prometheus.${var.domain_name}"
-  }
-
-  set {
-    name  = "prometheus.ingress.path"
-    value = "/"
-  }
-
-  set {
-    name  = "prometheus.ingress.pathType"
-    value = "Prefix"
-  }
-
-  # Existing Prometheus Configuration
-  set {
-    name  = "prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues"
-    value = "false"
-  }
-
-  set {
-    name  = "prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues"
-    value = "false"
-  }
-
-  set {
-    name  = "prometheus.prometheusSpec.retention"
-    value = "30d"
-  }
-
-  set {
-    name  = "prometheus.prometheusSpec.resources.requests.cpu"
-    value = "200m"
-  }
-
-  set {
-    name  = "prometheus.prometheusSpec.resources.requests.memory"
-    value = "1Gi"
-  }
-
-  set {
-    name  = "prometheus.prometheusSpec.resources.limits.cpu"
-    value = "500m"
-  }
-
-  set {
-    name  = "prometheus.prometheusSpec.resources.limits.memory"
-    value = "2Gi"
-  }
-
-  # Existing Grafana Configuration
-  set {
-    name  = "grafana.resources.requests.cpu"
-    value = "100m"
-  }
-
-  set {
-    name  = "grafana.resources.requests.memory"
-    value = "256Mi"
-  }
-
-  set {
-    name  = "grafana.resources.limits.cpu"
-    value = "200m"
-  }
-
-  set {
-    name  = "grafana.resources.limits.memory"
-    value = "512Mi"
-  }
+  values = [
+    yamlencode({
+      prometheus = {
+        prometheusSpec = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+          retention = "30d"
+          resources = {
+            requests = {
+              cpu = "200m"
+              memory = "1Gi"
+            }
+            limits = {
+              cpu = "500m"
+              memory = "2Gi"
+            }
+          }
+        }
+        ingress = {
+          enabled = true
+          ingressClassName = "nginx"
+          hosts = ["prometheus.${var.domain_name}"]
+          path = "/"
+          pathType = "Prefix"
+        }
+      }
+      alertmanager = {
+        alertmanagerSpec = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+      }
+      grafana = {
+        enabled = true
+        adminPassword = var.grafana_admin_password
+        ingress = {
+          enabled = true
+          ingressClassName = "nginx"
+          hosts = ["grafana.${var.domain_name}"]
+          path = "/"
+          pathType = "Prefix"
+        }
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
+        resources = {
+          requests = {
+            cpu = "100m"
+            memory = "256Mi"
+          }
+          limits = {
+            cpu = "200m"
+            memory = "512Mi"
+          }
+        }
+      }
+      prometheusOperator = {
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
+      }
+    })
+  ]
 }
 
 # Karpenter Module
@@ -270,6 +214,7 @@ module "karpenter" {
     AmazonEKS_CNI_Policy          = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
     AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
     AmazonSSMManagedInstanceCore  = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    AmazonEBSCSIDriverPolicy     = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
   }
 
   tags = var.tags
@@ -305,18 +250,22 @@ resource "helm_release" "karpenter" {
         eks.amazonaws.com/role-arn: ${module.karpenter.iam_role_arn}
     webhook:
       enabled: false
+    replicas: 1
     EOT
   ]
-
-  lifecycle {
-    ignore_changes = [
-      repository_password
-    ]
-  }
 
   depends_on = [
     module.eks,
     module.karpenter
+  ]
+}
+
+# Apply Karpenter NodePool configuration
+resource "kubectl_manifest" "karpenter_node_pool" {
+  count = var.karpenter_node_pool_configuration.enabled ? length(var.karpenter_node_pool_configuration.manifests) : 0
+  yaml_body = var.karpenter_node_pool_configuration.manifests[count.index].content
+  depends_on = [
+    helm_release.karpenter
   ]
 }
 
@@ -338,9 +287,12 @@ module "aws_load_balancer_controller" {
   cluster_version   = module.eks.cluster_version
   oidc_provider_arn = module.eks.oidc_provider_arn
 
-  # Only install AWS Load Balancer Controller
   enable_aws_load_balancer_controller = true
   aws_load_balancer_controller = {
+    configuration_values = jsonencode({
+      tolerations = var.critical_node_config.tolerations
+      affinity = var.critical_node_config.affinity
+    })
     set = [
       {
         name  = "vpcId"
@@ -374,21 +326,38 @@ module "eks_addons" {
   cluster_version   = module.eks.cluster_version
   oidc_provider_arn = module.eks.oidc_provider_arn
 
+  # EBS CSI Driver (Critical)
   eks_addons = {
     aws-ebs-csi-driver = {
       most_recent = true
+      configuration_values = jsonencode({
+        controller = {
+          tolerations = var.critical_node_config.tolerations
+          affinity = var.critical_node_config.affinity
+        }
+      })
     }
   }
 
-  # Enable NGINX Ingress Controller first
+  # NGINX Ingress Controller (Critical)
   enable_ingress_nginx = var.enable_ingress_nginx
   ingress_nginx = {
     namespace = var.ingress_nginx_namespace
     create_namespace = true
     values = [yamlencode({
       controller = {
+        config = {
+          "proxy-read-timeout" = "300",
+          "proxy-send-timeout" = "300",
+          "use-forwarded-headers" = "true"
+        }
+        tolerations = var.critical_node_config.tolerations
+        affinity = var.critical_node_config.affinity
         service = {
-          type = var.ingress_nginx_service_type
+          type = var.ingress_nginx_service_type,
+          annotations = {
+            "service.beta.kubernetes.io/aws-load-balancer-proxy-protocol" = "*"
+          }
         }
         ingressClassResource = {
           name = var.ingress_class_name
@@ -419,11 +388,15 @@ module "eks_addons" {
     })]
   }
 
-  # Enable Cert Manager
+  # Cert Manager (Critical)
   enable_cert_manager = var.enable_cert_manager
   cert_manager = {
     namespace = var.cert_manager_namespace
     create_namespace = true
+    configuration_values = jsonencode({
+      tolerations = var.critical_node_config.tolerations
+      affinity = var.critical_node_config.affinity
+    })
     set = [
       {
         name  = "serviceAccount.name"
@@ -436,7 +409,7 @@ module "eks_addons" {
     ]
   }
 
-  # Enable External Secrets Operator
+  # External Secrets Operator (Non-Critical)
   enable_external_secrets = var.enable_external_secrets
   external_secrets = {
     namespace = var.external_secrets_namespace
@@ -448,11 +421,7 @@ module "eks_addons" {
     ]
   }
 
-  # Configure External Secrets permissions
-  external_secrets_secrets_manager_arns = ["arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:*"]
-  external_secrets_ssm_parameter_arns   = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/*"]
-
-  # Enable ArgoCD last
+  # ArgoCD (Non-Critical)
   enable_argocd = var.enable_argocd
   argocd = {
     namespace = var.argocd_namespace
@@ -475,20 +444,8 @@ module "eks_addons" {
         value = "argocd.${var.domain_name}"
       },
       {
-        name  = "server.ingress.paths[0]"
-        value = "/"
-      },
-      {
-        name  = "server.ingress.pathType"
-        value = "Prefix"
-      },
-      {
         name  = "server.extraArgs[0]"
         value = "--insecure"
-      },
-      {
-        name  = "server.certificate.enabled"
-        value = "false"
       }
     ]
   }
@@ -523,7 +480,14 @@ resource "kubernetes_ingress_v1" "nginx_alb" {
     annotations = merge(
       try(var.ingress_alb.annotations, {}),
       {
-        "alb.ingress.kubernetes.io/certificate-arn" = module.acm.acm_certificate_arn
+        "alb.ingress.kubernetes.io/certificate-arn" = module.acm.acm_certificate_arn,
+        "alb.ingress.kubernetes.io/listen-ports" = "[{\"HTTP\": 80}, {\"HTTPS\": 443}]",
+        "alb.ingress.kubernetes.io/scheme" = "internet-facing",
+        "alb.ingress.kubernetes.io/target-type" = "ip",
+        "alb.ingress.kubernetes.io/healthcheck-path" = "/healthz",
+        "alb.ingress.kubernetes.io/backend-protocol" = "HTTP",
+        "alb.ingress.kubernetes.io/security-groups" = module.eks.node_security_group_id,
+        "kubernetes.io/ingress.class" = "alb"
       }
     )
   }
@@ -555,7 +519,7 @@ resource "kubernetes_ingress_v1" "nginx_alb" {
 # Wait for ALB to be ready
 resource "time_sleep" "wait_for_alb_ready" {
   depends_on = [kubernetes_ingress_v1.nginx_alb]
-  create_duration = "300s"  
+  create_duration = "600s"  
 }
 
 # Route53 Records Module
@@ -727,50 +691,35 @@ resource "helm_release" "elasticsearch" {
   version    = var.elasticsearch_version
   timeout    = 900
 
-  set {
-    name  = "replicas"
-    value = "1"
-  }
-
-  set {
-    name  = "minimumMasterNodes"
-    value = "1"
-  }
-
-  set {
-    name  = "persistence.enabled"
-    value = "true"
-  }
-
-  set {
-    name  = "volumeClaimTemplate.storageClassName"
-    value = "gp2"
-  }
-
-  set {
-    name  = "volumeClaimTemplate.resources.requests.storage"
-    value = "5Gi"  # Smaller storage for dev
-  }
-
-  set {
-    name  = "resources.requests.cpu"
-    value = "100m"  # Minimal CPU request
-  }
-
-  set {
-    name  = "resources.requests.memory"
-    value = "512Mi"  # Minimal memory request
-  }
-
-  set {
-    name  = "resources.limits.cpu"
-    value = "1000m"  # CPU limit
-  }
-
-  set {
-    name  = "resources.limits.memory"
-    value = "1Gi"  # Memory limit
-  }
+  values = [
+    yamlencode({
+      replicas = 1
+      minimumMasterNodes = 1
+      persistence = {
+        enabled = true
+      }
+      volumeClaimTemplate = {
+        storageClassName = "gp2"
+        resources = {
+          requests = {
+            storage = "5Gi"
+          }
+        }
+      }
+      resources = {
+        requests = {
+          cpu = "100m"
+          memory = "512Mi"
+        }
+        limits = {
+          cpu = "1000m"
+          memory = "1Gi"
+        }
+      }
+      tolerations = var.critical_node_config.tolerations
+      affinity = var.critical_node_config.affinity
+    })
+  ]
 }
 
 # Filebeat
@@ -820,6 +769,8 @@ resource "helm_release" "logstash" {
 
   values = [
     yamlencode({
+      tolerations = var.critical_node_config.tolerations
+      affinity = var.critical_node_config.affinity
       extraEnvs = [
         {
           name = "ELASTICSEARCH_USERNAME"
@@ -840,7 +791,6 @@ resource "helm_release" "logstash" {
           }
         }
       ]
-
       logstashPipeline = {
         "logstash.conf" = <<-EOT
           input {
@@ -859,7 +809,6 @@ resource "helm_release" "logstash" {
           }
         EOT
       }
-
       secretMounts = [
         {
           name = "elasticsearch-master-certs"
@@ -867,11 +816,8 @@ resource "helm_release" "logstash" {
           path = "/usr/share/logstash/config/elasticsearch-master-certs"
         }
       ]
-
       service = {
-        annotations = {}
         type = "ClusterIP"
-        loadBalancerIP = ""
         ports = [
           {
             name = "beats"
@@ -911,30 +857,32 @@ resource "helm_release" "kibana" {
         path = "/"
         pathType = "Prefix"
       }
+      tolerations = var.critical_node_config.tolerations
+      affinity = var.critical_node_config.affinity
     })
   ]
 }
 
-module "loki_stack" {
-  depends_on = [module.eks_addons]
-  source = "terraform-iaac/loki-stack/kubernetes"
 
-  namespace        = "monitoring"
-  create_namespace = false
 
-  provider_type          = "local"
-  pvc_storage_class_name = "gp2"
-  pvc_access_modes       = ["ReadWriteOnce"]
-  persistent_volume_size = "10Gi"
+# Add inbound rules to node security group for ALB
+resource "aws_security_group_rule" "node_ingress_alb_http" {
+  type                     = "ingress"
+  from_port                = 80
+  to_port                  = 80
+  protocol                 = "tcp"
+  security_group_id        = module.eks.node_security_group_id
+  cidr_blocks              = ["0.0.0.0/0"]
+  description             = "Allow ALB to access pod HTTP"
+}
 
-  loki_resources = {
-    request_cpu    = "100m"
-    request_memory = "256Mi"
-  }
-
-  promtail_resources = {
-    request_cpu    = "50m"
-    request_memory = "128Mi"
-  }
+resource "aws_security_group_rule" "node_ingress_alb_https" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = module.eks.node_security_group_id
+  cidr_blocks              = ["0.0.0.0/0"]
+  description             = "Allow ALB to access pod HTTPS"
 }
 

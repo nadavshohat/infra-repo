@@ -1,20 +1,25 @@
 inputs = {
   cluster_name = "dev-eks-cluster"
+  cluster_version = "1.27"
+  cluster_endpoint_private_access = true
+  cluster_endpoint_public_access = true
+  cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
+  enable_cluster_creator_admin_permissions = true
 
-  eks_managed_node_groups = {
-    general = {
-      name = "general"
-      instance_types = ["t3.medium"]
-      min_size     = 2
-      max_size     = 2
-      desired_size = 2
-      
-      labels = {
-        role = "general"
+  # Add Karpenter NodePool configuration to be applied
+  karpenter_node_pool_configuration = {
+    enabled = true
+    manifests = [
+      {
+        content = file("../../karpenter-nodepool-critical.yaml")
+      },
+      {
+        content = file("../../karpenter-nodepool-default.yaml")
+      },
+      {
+        content = file("../../karpenter-ec2nodeclass.yaml")
       }
-      
-      taints = []
-    }
+    ]
   }
 
   tags = {

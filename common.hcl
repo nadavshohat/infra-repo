@@ -3,6 +3,35 @@ inputs = {
   aws_region = "us-east-1"
   aws_role_arn = "arn:aws:iam::767397741479:role/TerraformRole"
 
+  # Critical Node Configuration
+  critical_node_config = {
+    tolerations = [
+      {
+        key      = "critical"
+        operator = "Equal"
+        value    = "true"
+        effect   = "NoSchedule"
+      }
+    ]
+    affinity = {
+      nodeAffinity = {
+        requiredDuringSchedulingIgnoredDuringExecution = {
+          nodeSelectorTerms = [
+            {
+              matchExpressions = [
+                {
+                  key = "karpenter.sh/nodepool"
+                  operator = "In"
+                  values = ["critical"]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+
   # Common VPC settings
   enable_dns_hostnames = true
   enable_dns_support = true
@@ -66,8 +95,6 @@ inputs = {
       "alb.ingress.kubernetes.io/group.name"       = "shared"
       "alb.ingress.kubernetes.io/listen-ports"     = "[{\"HTTP\": 80}, {\"HTTPS\": 443}]"
       "alb.ingress.kubernetes.io/ssl-policy"       = "ELBSecurityPolicy-TLS-1-2-2017-01"
-      "alb.ingress.kubernetes.io/actions.ssl-redirect" = "{\"Type\": \"redirect\", \"RedirectConfig\": { \"Protocol\": \"HTTPS\", \"Port\": \"443\", \"StatusCode\": \"HTTP_301\"}}"
-      "alb.ingress.kubernetes.io/conditions.ssl-redirect" = "[{\"Field\":\"http-header\",\"HttpHeaderConfig\":{\"HttpHeaderName\": \"X-Forwarded-Proto\",\"Values\":[\"http\"]}}]"
     }
   }
 
