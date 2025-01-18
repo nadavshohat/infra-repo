@@ -117,7 +117,7 @@ module "eks" {
 
 
 resource "helm_release" "kube_prometheus_stack" {
-  depends_on = [module.eks]
+  depends_on = [module.eks_addons]
   
   name             = "kube-prometheus-stack"
   repository       = "https://prometheus-community.github.io/helm-charts"
@@ -273,9 +273,18 @@ resource "kubectl_manifest" "karpenter_node_pool" {
   ]
 }
 
+# Auto-configure kubectl after cluster creation/update
+resource "null_resource" "update_kubeconfig" {
+  depends_on = [module.eks]
+
+  provisioner "local-exec" {
+    command = "aws eks update-kubeconfig --region us-east-1 --name dev-eks-cluster --role-arn arn:aws:iam::767397741479:role/TerraformRole"
+  }
+}
+
 # Wait for EKS cluster to be ready
 resource "time_sleep" "wait_for_eks" {
-  depends_on = [module.eks]
+  depends_on = [module.eks, null_resource.update_kubeconfig]
   create_duration = "30s"
 }
 
@@ -316,7 +325,7 @@ module "aws_load_balancer_controller" {
 # Wait for AWS Load Balancer Controller to be ready
 resource "time_sleep" "wait_for_alb" {
   depends_on = [module.aws_load_balancer_controller]
-  create_duration = "60s"
+  create_duration = "90s"
 }
 
 # Other EKS Addons
@@ -325,7 +334,8 @@ module "eks_addons" {
   version = "1.19.0"
 
   depends_on = [
-    time_sleep.wait_for_alb  
+    time_sleep.wait_for_alb,
+    module.aws_load_balancer_controller
   ]
 
   cluster_name      = module.eks.cluster_name
@@ -514,13 +524,16 @@ module "eks_addons" {
 # Wait for NGINX to be ready
 resource "time_sleep" "wait_for_nginx" {
   depends_on = [module.eks_addons]
-  create_duration = "60s"
+  create_duration = "90s"
 }
 
 # Wait for all addons to be ready
 resource "time_sleep" "wait_for_addons" {
-  depends_on = [time_sleep.wait_for_nginx]
-  create_duration = "30s"
+  depends_on = [
+    time_sleep.wait_for_nginx,
+    helm_release.kube_prometheus_stack
+  ]
+  create_duration = "60s"
 }
 
 # Create the ALB Ingress for NGINX Controller
@@ -579,7 +592,7 @@ resource "kubernetes_ingress_v1" "nginx_alb" {
 # Wait for ALB to be ready
 resource "time_sleep" "wait_for_alb_ready" {
   depends_on = [kubernetes_ingress_v1.nginx_alb]
-  create_duration = "600s"  
+  create_duration = "500s"
 }
 
 # Route53 Records Module
@@ -587,7 +600,10 @@ module "records" {
   source  = "terraform-aws-modules/route53/aws//modules/records"
   version = "~> 2.0"
 
-  depends_on = [time_sleep.wait_for_alb_ready]
+  depends_on = [
+    time_sleep.wait_for_alb_ready,
+    kubernetes_ingress_v1.nginx_alb
+  ]
 
   zone_name = var.zone_name
   records = [
@@ -728,16 +744,6 @@ module "documentdb_secrets" {
   )
 }
 
-# Get ArgoCD Password
-# data "kubernetes_secret" "argocd_password" {
-#   metadata {
-#     name      = "argocd-initial-admin-secret"
-#     namespace = "argocd"
-#   }
-#   depends_on = [
-#     module.eks_addons
-#   ]
-# }
 
 # Elasticsearch
 resource "helm_release" "elasticsearch" {
