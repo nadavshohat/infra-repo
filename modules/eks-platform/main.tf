@@ -115,84 +115,6 @@ module "eks" {
   )
 }
 
-
-resource "helm_release" "kube_prometheus_stack" {
-  depends_on = [module.eks_addons]
-  
-  name             = "kube-prometheus-stack"
-  repository       = "https://prometheus-community.github.io/helm-charts"
-  chart            = "kube-prometheus-stack"
-  namespace        = "monitoring"
-  create_namespace = true
-  version         = "67.8.0"
-
-  values = [
-    yamlencode({
-      prometheus = {
-        prometheusSpec = {
-          tolerations = var.critical_node_config.tolerations
-          affinity = var.critical_node_config.affinity
-          retention = "30d"
-          resources = {
-            requests = {
-              cpu = "200m"
-              memory = "1Gi"
-            }
-            limits = {
-              cpu = "500m"
-              memory = "2Gi"
-            }
-          }
-        }
-        ingress = {
-          enabled = true
-          ingressClassName = "nginx"
-          hosts = ["prometheus.${var.domain_name}"]
-          path = "/"
-          pathType = "Prefix"
-        }
-      }
-      alertmanager = {
-        alertmanagerSpec = {
-          tolerations = var.critical_node_config.tolerations
-          affinity = var.critical_node_config.affinity
-        }
-      }
-      kubeStateMetrics = {
-        tolerations = var.critical_node_config.tolerations
-        affinity = var.critical_node_config.affinity
-      }
-      grafana = {
-        enabled = true
-        adminPassword = var.grafana_admin_password
-        ingress = {
-          enabled = true
-          ingressClassName = "nginx"
-          hosts = ["grafana.${var.domain_name}"]
-          path = "/"
-          pathType = "Prefix"
-        }
-        tolerations = var.critical_node_config.tolerations
-        affinity = var.critical_node_config.affinity
-        resources = {
-          requests = {
-            cpu = "100m"
-            memory = "256Mi"
-          }
-          limits = {
-            cpu = "200m"
-            memory = "512Mi"
-          }
-        }
-      }
-      prometheusOperator = {
-        tolerations = var.critical_node_config.tolerations
-        affinity = var.critical_node_config.affinity
-      }
-    })
-  ]
-}
-
 # Karpenter Module
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
@@ -400,13 +322,7 @@ module "eks_addons" {
             }
           }
           serviceMonitor = {
-            enabled = true
-            additionalLabels = {
-              "app.kubernetes.io/name" = "ingress-nginx"
-              "app.kubernetes.io/instance" = "ingress-nginx"
-              "release" = "kube-prometheus-stack"
-            }
-            scrapeInterval = "30s"
+            enabled = false
           }
         }
       }
@@ -491,6 +407,9 @@ module "eks_addons" {
             enabled = true
             ingressClassName = "nginx"
             hosts = ["argocd.${var.domain_name}"]
+            annotations = {
+              "kubernetes.io/ingress.class" = "nginx"
+            }
           }
           extraArgs = [
             "--insecure"
@@ -530,8 +449,7 @@ resource "time_sleep" "wait_for_nginx" {
 # Wait for all addons to be ready
 resource "time_sleep" "wait_for_addons" {
   depends_on = [
-    time_sleep.wait_for_nginx,
-    helm_release.kube_prometheus_stack
+    time_sleep.wait_for_nginx
   ]
   create_duration = "60s"
 }
@@ -744,197 +662,6 @@ module "documentdb_secrets" {
   )
 }
 
-
-# Elasticsearch
-resource "helm_release" "elasticsearch" {
-  count      = var.enable_elk_stack ? 1 : 0
-  depends_on = [module.eks_addons]
-
-  name       = "elasticsearch"
-  repository = "elastic"
-  chart      = "elasticsearch"
-  namespace  = var.elk_namespace
-  version    = var.elasticsearch_version
-  timeout    = 900
-
-  values = [
-    yamlencode({
-      replicas = 1
-      minimumMasterNodes = 1
-      persistence = {
-        enabled = true
-      }
-      volumeClaimTemplate = {
-        storageClassName = "gp2"
-        resources = {
-          requests = {
-            storage = "5Gi"
-          }
-        }
-      }
-      resources = {
-        requests = {
-          cpu = "100m"
-          memory = "512Mi"
-        }
-        limits = {
-          cpu = "1000m"
-          memory = "1Gi"
-        }
-      }
-      tolerations = var.critical_node_config.tolerations
-      affinity = var.critical_node_config.affinity
-    })
-  ]
-}
-
-# Filebeat
-resource "helm_release" "filebeat" {
-  count      = var.enable_elk_stack ? 1 : 0
-  depends_on = [helm_release.elasticsearch]
-
-  name       = "filebeat"
-  repository = "elastic"
-  chart      = "filebeat"
-  namespace  = var.elk_namespace
-  version    = var.filebeat_version
-
-  values = [
-    yamlencode({
-      daemonset = {
-        enabled = true
-      }
-      # Remove tolerations and affinity since we want it on all nodes
-      filebeatConfig = {
-        "filebeat.yml" = <<-EOT
-          filebeat.inputs:
-          - type: container
-            paths:
-              - /var/log/containers/*.log
-            processors:
-            - add_kubernetes_metadata:
-                host: "$${NODE_NAME}"
-                matchers:
-                - logs_path:
-                    logs_path: "/var/log/containers/"
-
-          output.logstash:
-            hosts: ["logstash-logstash:5044"]
-        EOT
-      }
-    })
-  ]
-}
-
-# Logstash
-resource "helm_release" "logstash" {
-  count      = var.enable_elk_stack ? 1 : 0
-  depends_on = [helm_release.elasticsearch]
-
-  name       = "logstash"
-  repository = "elastic"
-  chart      = "logstash"
-  namespace  = var.elk_namespace
-  version    = var.logstash_version
-
-  values = [
-    yamlencode({
-      tolerations = var.critical_node_config.tolerations
-      affinity = var.critical_node_config.affinity
-      extraEnvs = [
-        {
-          name = "ELASTICSEARCH_USERNAME"
-          valueFrom = {
-            secretKeyRef = {
-              name = "elasticsearch-master-credentials"
-              key = "username"
-            }
-          }
-        },
-        {
-          name = "ELASTICSEARCH_PASSWORD"
-          valueFrom = {
-            secretKeyRef = {
-              name = "elasticsearch-master-credentials"
-              key = "password"
-            }
-          }
-        }
-      ]
-      logstashPipeline = {
-        "logstash.conf" = <<-EOT
-          input {
-            beats {
-              port => 5044
-            }
-          }
-
-          output {
-            elasticsearch {
-              hosts => "https://elasticsearch-master:9200"
-              cacert => "/usr/share/logstash/config/elasticsearch-master-certs/ca.crt"
-              user => "$${ELASTICSEARCH_USERNAME}"
-              password => "$${ELASTICSEARCH_PASSWORD}"
-            }
-          }
-        EOT
-      }
-      secretMounts = [
-        {
-          name = "elasticsearch-master-certs"
-          secretName = "elasticsearch-master-certs"
-          path = "/usr/share/logstash/config/elasticsearch-master-certs"
-        }
-      ]
-      service = {
-        type = "ClusterIP"
-        ports = [
-          {
-            name = "beats"
-            port = 5044
-            protocol = "TCP"
-            targetPort = 5044
-          },
-          {
-            name = "http"
-            port = 8080
-            protocol = "TCP"
-            targetPort = 8080
-          }
-        ]
-      }
-    })
-  ]
-}
-
-# Kibana
-resource "helm_release" "kibana" {
-  count      = var.enable_elk_stack ? 1 : 0
-  depends_on = [helm_release.elasticsearch]
-
-  name       = "kibana"
-  repository = "elastic"
-  chart      = "kibana"
-  namespace  = var.elk_namespace
-  version    = var.kibana_version
-
-  values = [
-    yamlencode({
-      ingress = {
-        enabled = true
-        ingressClassName = "nginx"
-        hosts = ["${var.kibana_ingress_host}.${var.domain_name}"]
-        path = "/"
-        pathType = "Prefix"
-      }
-      tolerations = var.critical_node_config.tolerations
-      affinity = var.critical_node_config.affinity
-    })
-  ]
-}
-
-
-
 # Add inbound rules to node security group for ALB
 resource "aws_security_group_rule" "node_ingress_alb_http" {
   type                     = "ingress"
@@ -954,31 +681,5 @@ resource "aws_security_group_rule" "node_ingress_alb_https" {
   security_group_id        = module.eks.node_security_group_id
   cidr_blocks              = ["0.0.0.0/0"]
   description             = "Allow ALB to access pod HTTPS"
-}
-
-# Loki Stack
-module "loki_stack" {
-  depends_on = [module.eks_addons]
-  source = "terraform-iaac/loki-stack/kubernetes"
-  
-  namespace        = "monitoring"
-  create_namespace = false
-  
-  provider_type          = "local"
-  pvc_storage_class_name = "gp2"
-  pvc_access_modes       = ["ReadWriteOnce"]
-  persistent_volume_size = "10Gi"
-  
-  loki_resources = {
-    request_cpu    = "100m"
-    request_memory = "256Mi"
-  }
-  
-  promtail_resources = {
-    request_cpu    = "50m"
-    request_memory = "128Mi"
-  }
-
-  loki_docker_image = "grafana/loki:2.9.3"
 }
 
